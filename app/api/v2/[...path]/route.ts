@@ -61,7 +61,7 @@ async function handle(req: NextRequest, ctx: {
         }
         let b: Record<string, unknown> = {};
         if (req.method === "POST") {
-            if (req.headers.get("origin") !== origin())
+            if (req.headers.get("origin") !== req.nextUrl.origin)
                 throw new AppError("Open the app using its configured address, then retry.", 403);
             if (!req.headers.get("content-type")?.startsWith("application/json"))
                 throw new AppError("Expected JSON.", 415);
