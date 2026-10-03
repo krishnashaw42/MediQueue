@@ -22,15 +22,15 @@ export function database(): Database {
     throw new Error('DATABASE_URL or POSTGRES_URL is required');
   const ca = process.env.DATABASE_CA_CERT?.replaceAll('\\n','\n');
   const url = new URL(connectionString);
-  if (ca) {
-    // When a CA is supplied, require full certificate validation instead of
-    // letting connection-string SSL flags override the explicit TLS options.
-    for (const key of ['sslmode','sslcert','sslkey','sslrootcert'])
-      url.searchParams.delete(key);
-  }
+  // Set TLS explicitly because node-postgres otherwise interprets
+  // `sslmode=require` differently from libpq. Vercel's generated Supabase
+  // URL guarantees encrypted transport; supplying the project CA upgrades
+  // this to certificate and hostname verification.
+  for (const key of ['sslmode','sslcert','sslkey','sslrootcert'])
+    url.searchParams.delete(key);
   const pool = new Pool({
     connectionString: url.toString(),
-    ...(ca ? { ssl: { rejectUnauthorized: true, ca } } : {}),
+    ssl: ca ? { rejectUnauthorized: true, ca } : { rejectUnauthorized: false },
     max: 3, idleTimeoutMillis: 10000, connectionTimeoutMillis: 10000,
     allowExitOnIdle: true,
   });
