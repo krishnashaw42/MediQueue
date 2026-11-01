@@ -1,5 +1,6 @@
 import { AppError, store, type Order, type Payment, type Store } from "./store";
-import { storedGateway, gatewayForOrder } from "./payment-settings";
+import Razorpay from "razorpay";
+import { storedGateway, gatewayForOrder, legacyGateway } from "./payment-settings";
 import { signatureOK } from "./security";
 type Gateway = {
     keyId: string;
@@ -22,14 +23,7 @@ export async function gateway(hospitalId: string, s: Store = store()): Promise<G
     const saved = await storedGateway(s, hospitalId);
     if (saved)
         return saved;
-    let map: Record<string, Gateway>;
-    try {
-        map = JSON.parse(process.env.HOSPITAL_RAZORPAY_ACCOUNTS || "{}");
-    }
-    catch {
-        throw new AppError("Payment configuration needs attention.", 503);
-    }
-    const g = map[hospitalId];
+    const g = legacyGateway(hospitalId);
     if (!g?.keyId || !g.keySecret)
         throw new AppError("This hospital has not connected its payment gateway yet.", 503);
     return g;
@@ -76,13 +70,12 @@ async function razor<T>(s: Store, hospitalId: string, path: string, data?: unkno
 export async function createGatewayOrder(s: Store, order: Order) {
     if (order.gatewayId)
         return order;
+    if (!Number.isSafeInteger(order.amount) || order.amount < 100)
+        throw new AppError("Payment amount must be at least 100 paise.", 400);
     const g = await gateway(order.hospitalId, s);
     try {
-        const r = await razor<{
-            id: string;
-            amount: number;
-            currency: string;
-        }>(s, order.hospitalId, "orders", {
+        const client = new Razorpay({ key_id: g.keyId, key_secret: g.keySecret });
+        const r = await client.orders.create({
             amount: order.amount,
             currency: "INR",
             receipt: order.id,
@@ -98,22 +91,25 @@ export async function createGatewayOrder(s: Store, order: Order) {
     }
     catch (e) {
         await s.run("UPDATE orders SET status='setup_failed' WHERE id=? AND gatewayId IS NULL", order.id);
-        throw e;
+        if (e instanceof AppError) throw e;
+        const authFailure = typeof e === "object" && e !== null && "statusCode" in e && Number(e.statusCode) === 401;
+        throw new AppError(authFailure ? "Razorpay authentication failed. Check the payment gateway credentials." : "Unable to create payment order. Check this booking before retrying.", authFailure ? 401 : 500);
     }
 }
 export async function reconcile(s: Store, o: Order, paymentId?: string, signature?: string) {
+    // Validate callback authenticity even for an already-settled order.
+    const g = await gatewayForOrder(s, o.hospitalId, o.keyId!);
+    if (paymentId !== undefined && (!/^pay_[a-zA-Z0-9]+$/.test(paymentId) ||
+        !signatureOK(`${o.gatewayId}|${paymentId}`, signature || "", g.keySecret)))
+        throw new AppError("Invalid payment signature.", 400);
     if (o.tokenId) {
         await sendSMS(s, o.tokenId);
         return await s.token(o.tokenId);
     }
     if (!o.gatewayId)
         throw new AppError("This order has no payment checkout. Start a new booking.", 409);
-    const g = await gatewayForOrder(s, o.hospitalId, o.keyId!);
     let payment: Payment | undefined;
     if (paymentId) {
-        if (!/^pay_[a-zA-Z0-9]+$/.test(paymentId) ||
-            !signatureOK(`${o.gatewayId}|${paymentId}`, signature || "", g.keySecret))
-            throw new AppError("Invalid payment signature.", 400);
         payment = await razor<Payment>(s, o.hospitalId, `payments/${paymentId}`, undefined, g);
     }
     else {

@@ -244,7 +244,7 @@ async function handle(req: NextRequest, ctx: {
                 const o = await s.ownedOrder(user, String(b.orderId));
                 await s.rate(`verify:${o.id}`, 30, 60000);
                 if (path === "verify" &&
-                    (typeof b.paymentId !== "string" || typeof b.signature !== "string"))
+                    (typeof b.paymentId !== "string" || !b.paymentId || typeof b.signature !== "string" || !b.signature || typeof b.gatewayOrderId !== "string" || b.gatewayOrderId !== o.gatewayId))
                     throw new AppError("Missing payment verification fields.");
                 const token = await reconcile(s, o, path === "verify" ? (b.paymentId as string) : undefined, b.signature as string | undefined);
                 return json({

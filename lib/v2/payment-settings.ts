@@ -91,7 +91,12 @@ export async function gatewayForOrder(s: Store, hospitalId: string, keyId: strin
 export function legacyGateway(hospitalId: string): GatewayKeys | null {
     try {
         const g = JSON.parse(process.env.HOSPITAL_RAZORPAY_ACCOUNTS || "{}")[hospitalId];
-        return g?.keyId && g?.keySecret ? g : null;
+        if (g?.keyId && g?.keySecret) return g;
+        const keyId = process.env.RAZORPAY_KEY_ID;
+        const keySecret = process.env.RAZORPAY_KEY_SECRET;
+        return keyId && keySecret ? {
+            keyId, keySecret, webhookSecret: process.env.RAZORPAY_WEBHOOK_SECRET || "",
+        } : null;
     }
     catch {
         return null;

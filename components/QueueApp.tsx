@@ -693,6 +693,7 @@ type CheckoutOptions = {
   prefill: { name: string; email: string; contact: string };
   theme: { color: string };
   handler: (r: {
+    razorpay_order_id: string;
     razorpay_payment_id: string;
     razorpay_signature: string;
   }) => void;
@@ -702,7 +703,7 @@ declare global {
   interface Window {
     Razorpay?: new (options: CheckoutOptions) => {
       open: () => void;
-      on: (event: string, fn: () => void) => void;
+      on: (event: "payment.failed", fn: (event: { error?: { description?: string } }) => void) => void;
     };
   }
 }
@@ -721,7 +722,12 @@ function loadCheckout() {
     }, 15000);
     script.onload = () => {
       clearTimeout(timeout);
-      resolve();
+      if (window.Razorpay) resolve();
+      else {
+        script.remove();
+        scriptPromise = null;
+        reject(new Error("Payment checkout is unavailable. Please retry."));
+      }
     };
     script.onerror = () => {
       clearTimeout(timeout);
@@ -754,9 +760,13 @@ function Booking({
     [error, setError] = useState(""),
     [message, setMessage] = useState("");
   const attempt = useRef<{ selection: string; key: string } | null>(null);
+  const checkoutActive = useRef(false);
   const selection = services.find((s) => s.id === serviceId) || services[0];
   async function pay() {
-    if (!selection || busy) return;
+    if (!selection || checkoutActive.current) return;
+    checkoutActive.current = true;
+    let verifying = false;
+    const finish = () => { checkoutActive.current = false; setBusy(false); };
     setBusy(true);
     setError("");
     setMessage("");
@@ -789,8 +799,11 @@ function Booking({
         prefill: { name: user.name, email: user.email, contact: user.mobile },
         theme: { color: "#087f79" },
         handler: (result) => {
+          verifying = true;
+          setError("");
           void api<{ token: Token | null }>("verify", {
             orderId: r.order.id,
+            gatewayOrderId: result.razorpay_order_id,
             paymentId: result.razorpay_payment_id,
             signature: result.razorpay_signature,
           })
@@ -808,19 +821,20 @@ function Booking({
                 `${e.message} Open My tokens & payments to check this order before paying again.`,
               );
             })
-            .finally(() => setBusy(false));
+            .finally(finish);
         },
         modal: {
           ondismiss: () => {
-            setBusy(false);
+            if (verifying) return;
+            finish();
             setMessage(
               "Checkout closed. You can check this order in My tokens & payments.",
             );
           },
         },
       });
-      checkout.on("payment.failed", () => {
-        setBusy(false);
+      checkout.on("payment.failed", (event) => {
+        setError(event.error?.description || "Payment failed. Please retry in checkout or close it.");
         setMessage(
           "Payment did not complete. Check your orders before retrying.",
         );
@@ -828,7 +842,7 @@ function Booking({
       checkout.open();
     } catch (e) {
       setError((e as Error).message);
-      setBusy(false);
+      finish();
     }
   }
   return (

@@ -7,6 +7,34 @@ import { savePaymentSettings, storedGateway, paymentSettings } from '../lib/v2/p
 import { Store } from '../lib/v2/store';
 import { schema, type Query } from '../lib/v2/database';
 
+test('payment encryption rejects malformed server keys and preserves stored secrets', async () => {
+  const db = new PGlite();
+  await db.exec(schema);
+  const query: Query = async (sql, params = []) => { const r = await db.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows }; };
+  const s = new Store({ query, transaction: async fn => db.transaction(async tx => fn(async (sql, params = []) => { const r = await tx.query(sql, params); return { rows: r.rows, rowCount: r.affectedRows }; })) });
+  const previous = process.env.PAYMENT_ENCRYPTION_KEY;
+  try {
+    const owner = await s.register('hospital', 'Owner', 'encryption@example.test', '+919876543210', 'hash', 'Test Hospital');
+    const keys = { keyId: 'rzp_test_example', keySecret: 'test-only-secret', webhookSecret: '' };
+    process.env.PAYMENT_ENCRYPTION_KEY = 'a'.repeat(60);
+    await assert.rejects(savePaymentSettings(s, owner, keys), /Payment encryption configuration is invalid/);
+    assert.equal(await storedGateway(s, owner.hospitalId!), null);
+    process.env.PAYMENT_ENCRYPTION_KEY = 'a'.repeat(64);
+    await savePaymentSettings(s, owner, keys);
+    process.env.PAYMENT_ENCRYPTION_KEY = 'a'.repeat(64);
+    assert.deepEqual(await storedGateway(s, owner.hospitalId!), keys);
+    const before = await s.get<{encrypted: string}>('SELECT encrypted FROM payment_settings WHERE hospitalId=?', owner.hospitalId!);
+    process.env.PAYMENT_ENCRYPTION_KEY = 'not-a-valid-key';
+    await assert.rejects(savePaymentSettings(s, owner, keys));
+    assert.deepEqual(await s.get('SELECT encrypted FROM payment_settings WHERE hospitalId=?', owner.hospitalId!), before);
+    process.env.PAYMENT_ENCRYPTION_KEY = 'a'.repeat(64);
+    assert.deepEqual(await storedGateway(s, owner.hospitalId!), keys);
+  } finally {
+    if (previous === undefined) delete process.env.PAYMENT_ENCRYPTION_KEY; else process.env.PAYMENT_ENCRYPTION_KEY = previous;
+    await db.close();
+  }
+});
+
 test('Postgres preserves ownership, payment idempotency, queue order and insights', async () => {
   const db = new PGlite();
   await db.exec(schema);
